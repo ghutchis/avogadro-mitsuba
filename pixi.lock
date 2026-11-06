@@ -1406,7 +1406,7 @@ packages:
   name: avogadro-mitsuba
   requires_dist:
   - numpy
-  - mitsuba>=3.6
+  - mitsuba>=3.9
   - avogadro>=2.1
   requires_python: '>=3.12'
 - pypi: https://files.pythonhosted.org/packages/00/47/34d9b6e5622d6511867b34287f7e2cc84f0cf5e61773db70c51f233769d7/avogadro-2.1.0-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl

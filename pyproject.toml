@@ -7,7 +7,8 @@ license = "BSD-3-Clause"
 dependencies = [
     "numpy",
     # Mitsuba is only on PyPI (no conda-forge package, no macOS x86_64 wheel).
-    "mitsuba>=3.6",
+    # 3.9 for the Metal variants; only 3.9.1 has been tested.
+    "mitsuba>=3.9",
     # progress reporting (avogadro.command)
     "avogadro>=2.1",
 ]
@@ -53,7 +54,7 @@ test = { features = ["test"], solve-group = "default" }
 # --- Avogadro --------------------------------------------------------------
 
 [tool.avogadro]
-minimum-avogadro-version = "1.103"
+minimum-avogadro-version = "2.1"
 
 [[tool.avogadro.menu-commands]]
 identifier = "render"
