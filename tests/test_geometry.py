@@ -63,3 +63,16 @@ def test_detail_is_lowered_for_huge_scenes(monkeypatch):
     scene = build_scene(molecule([6] * 5, [(i * 3.0, 0, 0) for i in range(5)]))
     meshes = geometry.tessellate(scene, "High")
     assert sum(m.triangle_count for m in meshes.values()) == 5 * 20 * 4**2
+
+
+def test_tessellate_groups_by_opacity():
+    cjson = molecule([6, 6], [(0, 0, 0), (1.5, 0, 0)], [(0, 1)], [1])
+    cjson["layer"] = {
+        "visible": [True],
+        "enable": {"Licorice": [True], "Van der Waals": [True]},
+        "settings": {"Licorice": ["1.0"], "Van der Waals": ["0.5"]},
+    }
+    meshes = geometry.tessellate(build_scene(cjson), "Low")
+    # same colour, two opacities: opaque 255 and half 128
+    assert sorted(key[3] for key in meshes) == [128, 255]
+    assert len({key[:3] for key in meshes}) == 1

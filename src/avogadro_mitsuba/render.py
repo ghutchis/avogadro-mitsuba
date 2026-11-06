@@ -19,6 +19,8 @@ except ImportError:  # pragma: no cover - avogadro wheel not installed
 
 MAX_PASSES = 8
 MAX_DEPTH = 8
+# a mask surface that lets the ray through still consumes one bounce
+MAX_DEPTH_TRANSLUCENT = 32
 
 # "Material" option -> BSDF description (the base_color is added per mesh)
 MATERIALS = {
@@ -105,7 +107,9 @@ def build_mitsuba_scene(mi, scene, camera, width, height, options):
     sensor["sampler"] = {"type": "independent", "sample_count": 1}
     scene_dict = {
         "type": "scene",
-        "integrator": {"type": "path", "max_depth": MAX_DEPTH,
+        "integrator": {"type": "path",
+                       "max_depth": (MAX_DEPTH_TRANSLUCENT if scene.translucent
+                                     else MAX_DEPTH),
                        "hide_emitters": True},
         "sensor": sensor,
     }
@@ -117,10 +121,15 @@ def build_mitsuba_scene(mi, scene, camera, width, height, options):
     _lighting(scene_dict, camera, centre, radius, transparent)
 
     for i, (key, data) in enumerate(meshes.items()):
-        linear = srgb_to_linear(np.array(key) / 255.0).tolist()
+        linear = srgb_to_linear(np.array(key[:3]) / 255.0).tolist()
         bsdf_dict = dict(material)
         bsdf_dict["base_color" if material["type"] == "principled"
                   else "reflectance"] = {"type": "rgb", "value": linear}
+        opacity = key[3] / 255.0
+        if opacity < 1.0:  # alpha blending, as in Avogadro's translucent layers
+            bsdf_dict = {"type": "mask",
+                         "opacity": {"type": "rgb", "value": [opacity] * 3},
+                         "bsdf": bsdf_dict}
         bsdf = mi.load_dict(bsdf_dict)
         scene_dict[f"mesh{i}"] = _make_mesh(mi, f"mesh{i}", data, bsdf)
     return mi.load_dict(scene_dict)

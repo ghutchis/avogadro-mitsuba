@@ -59,10 +59,13 @@ def test_custom_colors_and_hidden_hydrogens(colors):
     atoms = colors["atoms"]
     numbers = np.array(atoms["elements"]["number"])
     scene = build_scene(colors)
-    # settings: "true false 0.3 0.1 0.36" -> hydrogens hidden, opacity warning
+    # settings: "true false 0.3 0.1 0.36" -> hydrogens hidden, opacity 0.36
     heavy = int((numbers != 1).sum())
     assert scene.sphere_count == heavy
-    assert any("opacity" in w for w in scene.warnings)
+    assert not scene.warnings
+    np.testing.assert_allclose(scene.sphere_opacity, 0.36)
+    np.testing.assert_allclose(scene.cylinder_opacity, 0.36)
+    assert scene.translucent
     rgb = np.array(atoms["colors"], dtype=float).reshape(-1, 3) / 255.0
     np.testing.assert_allclose(scene.sphere_colors, rgb[numbers != 1])
     # no bond to a hydrogen survives: every cylinder end lies on a heavy atom
@@ -157,3 +160,36 @@ def test_mixed_layers(clone):
                    "settings": {}}
     scene = build_scene(cj)
     assert sorted(scene.sphere_radii) == pytest.approx(sorted([1.77, 1.77 * 0.3]))
+
+
+def _layered(vdw_opacity):
+    """Two carbons, Licorice (opaque) plus Van der Waals on one layer."""
+    cjson = molecule([6, 6], [(0, 0, 0), (1.5, 0, 0)], [(0, 1)], [1])
+    cjson["layer"] = {
+        "visible": [True],
+        "enable": {"Licorice": [True], "Van der Waals": [True]},
+        "settings": {"Licorice": ["1.0"], "Van der Waals": [str(vdw_opacity)]},
+    }
+    return cjson
+
+
+def test_opacity_is_carried_per_primitive():
+    scene = build_scene(_layered(0.3))
+    assert not scene.warnings
+    # two licorice spheres (opaque) then two van der Waals spheres
+    np.testing.assert_allclose(scene.sphere_opacity, [1.0, 1.0, 0.3, 0.3])
+    np.testing.assert_allclose(scene.cylinder_opacity, [1.0])
+    assert scene.translucent
+    assert not build_scene(_layered(1.0)).translucent
+
+
+def test_bond_opacity_ignores_disabled_layer_settings():
+    cjson = molecule([6, 6], [(0, 0, 0), (1.5, 0, 0)], [(0, 1)], [1])
+    cjson["atoms"]["layer"] = [0, 1]
+    cjson["layer"] = {
+        "visible": [True, True],
+        "enable": {"Licorice": [True, False]},
+        "settings": {"Licorice": ["0.5", "0.1"]},
+    }
+    scene = build_scene(cjson)
+    np.testing.assert_allclose(scene.cylinder_opacity, [0.5])

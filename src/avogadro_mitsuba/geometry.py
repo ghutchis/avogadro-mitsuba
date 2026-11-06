@@ -124,8 +124,9 @@ def _merge(meshes):
     )
 
 
-def _color_key(rgb):
-    return tuple(int(round(c * 255)) for c in rgb)
+def _color_key(rgb, opacity=1.0):
+    """(r, g, b, a) in 0-255: the grouping key of a mesh."""
+    return tuple(int(round(c * 255)) for c in (*rgb, opacity))
 
 
 def estimate_triangles(scene, subdivisions, sides):
@@ -133,7 +134,8 @@ def estimate_triangles(scene, subdivisions, sides):
 
 
 def tessellate(scene, detail="Medium"):
-    """Merge a Scene into {(r, g, b) 0-255 sRGB: MeshData}, one mesh per colour.
+    """Merge a Scene into {(r, g, b, a) 0-255: MeshData}, one mesh per colour
+    and opacity (sRGB colour, alpha = opacity).
 
     The detail is lowered if the mesh would exceed TRIANGLE_BUDGET.
     """
@@ -144,9 +146,11 @@ def tessellate(scene, detail="Medium"):
 
     groups = {}
     for i, rgb in enumerate(scene.sphere_colors):
-        groups.setdefault(_color_key(rgb), ([], []))[0].append(i)
+        key = _color_key(rgb, scene.sphere_opacity[i])
+        groups.setdefault(key, ([], []))[0].append(i)
     for i, rgb in enumerate(scene.cylinder_colors):
-        groups.setdefault(_color_key(rgb), ([], []))[1].append(i)
+        key = _color_key(rgb, scene.cylinder_opacity[i])
+        groups.setdefault(key, ([], []))[1].append(i)
 
     result = {}
     for key, (sphere_ids, cylinder_ids) in groups.items():

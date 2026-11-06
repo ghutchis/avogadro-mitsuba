@@ -10,6 +10,10 @@ mi = pytest.importorskip("mitsuba")
 from avogadro_mitsuba.backend import select_variant
 from avogadro_mitsuba.render import run_render, srgb_to_linear, unique_path
 
+from avogadro_mitsuba.render import build_mitsuba_scene
+from avogadro_mitsuba.camera import fallback_view
+from avogadro_mitsuba.scene import build_scene
+
 from conftest import molecule
 
 
@@ -68,3 +72,37 @@ def test_cli_entry_point(caffeine, tmp_path):
         input=payload, capture_output=True, text=True, timeout=300)
     out = [l for l in proc.stdout.splitlines() if l.startswith("{")][-1]
     assert "message" in json.loads(out), proc.stderr
+
+
+def _translucent_cjson():
+    cjson = molecule([6], [(0, 0, 0)])
+    cjson["layer"] = {
+        "visible": [True],
+        "enable": {"Van der Waals": [True]},
+        "settings": {"Van der Waals": ["0.25"]},
+    }
+    return cjson
+
+
+def test_translucent_layer_is_lighter_than_opaque(tmp_path):
+    opaque = _translucent_cjson()
+    opaque["layer"]["settings"]["Van der Waals"] = ["1.0"]
+    centre = {}
+    for name, cjson in (("opaque", opaque), ("clear", _translucent_cjson())):
+        out = tmp_path / name
+        result = run_render({"cjson": cjson, "options": options(tmp_path, output_dir=str(out))})
+        assert "error" not in result, result
+        assert "opacity" not in result["message"]
+        bitmap = np.array(mi.Bitmap(str(next(out.glob("*.png")))))
+        centre[name] = bitmap[20:28, 28:36, :3].astype(float).mean()
+    assert centre["clear"] > centre["opaque"] + 20  # more background shows
+
+
+def test_translucent_scene_wraps_material_in_mask():
+    scene = build_scene(_translucent_cjson())
+    camera = fallback_view(scene.positions)
+    mscene = build_mitsuba_scene(mi, scene, camera, 32, 24, {})
+    assert str(mscene.shapes()[0].bsdf()).startswith("Mask[")
+    opaque = build_scene(molecule([6], [(0, 0, 0)]))
+    mscene = build_mitsuba_scene(mi, opaque, camera, 32, 24, {})
+    assert not str(mscene.shapes()[0].bsdf()).startswith("Mask[")

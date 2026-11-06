@@ -37,19 +37,22 @@ class OpacitySettings:
 
 @dataclass
 class Scene:
-    """Spheres (center, radius, rgb) and cylinders (p0, p1, radius, rgb).
+    """Spheres (center, radius, rgb, opacity) and cylinders (p0, p1, radius,
+    rgb, opacity).
 
-    Colors are sRGB in 0-1. `positions` holds every atom, drawn or not, for
+    Colors are sRGB in 0-1, opacities 0-1. `positions` holds every atom, drawn or not, for
     framing the camera.
     """
 
     sphere_centers: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     sphere_radii: np.ndarray = field(default_factory=lambda: np.zeros(0))
     sphere_colors: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    sphere_opacity: np.ndarray = field(default_factory=lambda: np.zeros(0))
     cylinder_starts: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     cylinder_ends: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     cylinder_radii: np.ndarray = field(default_factory=lambda: np.zeros(0))
     cylinder_colors: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    cylinder_opacity: np.ndarray = field(default_factory=lambda: np.zeros(0))
     positions: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     warnings: list = field(default_factory=list)
 
@@ -60,6 +63,12 @@ class Scene:
     @property
     def cylinder_count(self):
         return len(self.cylinder_radii)
+
+    @property
+    def translucent(self):
+        """Is any primitive drawn with opacity below 1?"""
+        return bool((self.sphere_opacity < 1.0).any()
+                    or (self.cylinder_opacity < 1.0).any())
 
 
 def _to_bool(text):
@@ -204,28 +213,30 @@ class _Builder:
         self.sphere = []
         self.cylinder = []
 
-    def add_sphere(self, center, radius, rgb):
-        self.sphere.append((center, radius, rgb))
+    def add_sphere(self, center, radius, rgb, opacity=1.0):
+        self.sphere.append((center, radius, rgb, opacity))
 
-    def add_cylinder(self, p0, p1, radius, rgb0, rgb1):
+    def add_cylinder(self, p0, p1, radius, rgb0, rgb1, opacity=1.0):
         """Add a cylinder, split at the midpoint when the colors differ."""
         if np.allclose(rgb0, rgb1):
-            self.cylinder.append((p0, p1, radius, rgb0))
+            self.cylinder.append((p0, p1, radius, rgb0, opacity))
             return
         mid = 0.5 * (p0 + p1)
-        self.cylinder.append((p0, mid, radius, rgb0))
-        self.cylinder.append((mid, p1, radius, rgb1))
+        self.cylinder.append((p0, mid, radius, rgb0, opacity))
+        self.cylinder.append((mid, p1, radius, rgb1, opacity))
 
     def finish(self, scene):
         if self.sphere:
             scene.sphere_centers = np.array([s[0] for s in self.sphere])
             scene.sphere_radii = np.array([s[1] for s in self.sphere])
             scene.sphere_colors = np.array([s[2] for s in self.sphere])
+            scene.sphere_opacity = np.array([s[3] for s in self.sphere])
         if self.cylinder:
             scene.cylinder_starts = np.array([c[0] for c in self.cylinder])
             scene.cylinder_ends = np.array([c[1] for c in self.cylinder])
             scene.cylinder_radii = np.array([c[2] for c in self.cylinder])
             scene.cylinder_colors = np.array([c[3] for c in self.cylinder])
+            scene.cylinder_opacity = np.array([c[4] for c in self.cylinder])
 
 
 def build_scene(cjson):
@@ -263,21 +274,16 @@ def build_scene(cjson):
         styles = [BALL_AND_STICK]
 
     builder = _Builder()
-    translucent = False
     for style in styles:
-        translucent |= _add_style(builder, style, layers, positions, numbers,
-                                  colors, radii_vdw, pairs, orders)
+        _add_style(builder, style, layers, positions, numbers, colors,
+                   radii_vdw, pairs, orders)
     builder.finish(scene)
-    if translucent:
-        scene.warnings.append("Layer opacity below 1 is ignored; drawn opaque.")
     return scene
 
 
 def _add_style(builder, style, layers, positions, numbers, colors, radii_vdw,
                pairs, orders):
-    """Add the geometry of one style across all layers. Returns True if any
-    drawn layer asked for opacity < 1."""
-    translucent = False
+    """Add the geometry of one style across all layers."""
     parse = parse_ball_and_stick if style == BALL_AND_STICK else parse_opacity
     cache = {}
 
@@ -291,7 +297,6 @@ def _add_style(builder, style, layers, positions, numbers, colors, radii_vdw,
         if not layers.is_enabled(style, layer):
             continue
         conf = setting(layer)
-        translucent |= conf.opacity < 1.0
         if style == BALL_AND_STICK:
             if numbers[i] == 1 and not conf.show_hydrogens:
                 continue
@@ -300,21 +305,23 @@ def _add_style(builder, style, layers, positions, numbers, colors, radii_vdw,
             radius = LICORICE_RADIUS
         else:
             radius = radii_vdw[i]
-        builder.add_sphere(positions[i], radius, colors[i])
+        builder.add_sphere(positions[i], radius, colors[i], conf.opacity)
 
     if style == VAN_DER_WAALS:
-        return translucent
+        return
 
     for (a1, a2), order in zip(pairs, orders):
         l1, l2 = layers.layer_of(a1), layers.layer_of(a2)
         if not (layers.is_enabled(style, l1) or layers.is_enabled(style, l2)):
             continue
         c1, c2 = setting(l1), setting(l2)
-        if c1.opacity < 1.0 or c2.opacity < 1.0:
-            translucent = True
+        # a bond between layers is as opaque as the most opaque enabled end
+        opacity = max(c.opacity for c, l in ((c1, l1), (c2, l2))
+                      if layers.is_enabled(style, l))
         p1, p2 = positions[a1], positions[a2]
         if style == LICORICE:
-            builder.add_cylinder(p1, p2, LICORICE_RADIUS, colors[a1], colors[a2])
+            builder.add_cylinder(p1, p2, LICORICE_RADIUS, colors[a1], colors[a2],
+                                opacity)
             continue
         has_h = numbers[a1] == 1 or numbers[a2] == 1
         if has_h and not c1.show_hydrogens and not c2.show_hydrogens:
@@ -322,5 +329,4 @@ def _add_style(builder, style, layers, positions, numbers, colors, radii_vdw,
         radius = 0.5 * (c1.bond_radius + c2.bond_radius)
         multi = c1.multi_bonds or c2.multi_bonds
         for start, end, r in _bond_cylinders(p1, p2, int(order), radius, multi):
-            builder.add_cylinder(start, end, r, colors[a1], colors[a2])
-    return translucent
+            builder.add_cylinder(start, end, r, colors[a1], colors[a2], opacity)
