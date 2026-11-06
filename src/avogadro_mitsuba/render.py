@@ -38,6 +38,16 @@ KEY_DISTANCE = 3.0  # in bounding radii
 KEY_SIZE = 1.5  # light edge, in bounding radii
 KEY_IRRADIANCE = 3.0
 
+# "Avogadro-like" lighting approximates the GL shaders: one light fixed in eye
+# space, flat ambient, no shadow-casting area light. L is the direction toward
+# the light in GL eye space (+Z toward the viewer): above and in front.
+LIGHTINGS = ("Studio", "Avogadro-like")
+AVOGADRO_LIGHT_EYE = (0.0, 1.0, 1.0)
+# The shader adds ambient 0.4 and diffuse 0.55 * N.L in display (gamma) space;
+# these linear values were tuned by eye to give the same tones after sRGB.
+AVOGADRO_FILL_RADIANCE = 0.25
+AVOGADRO_KEY_IRRADIANCE = 2.6
+
 
 @dataclass
 class RenderResult:
@@ -70,7 +80,40 @@ def _make_mesh(mi, name, data, bsdf):
     return mesh
 
 
-def _lighting(scene_dict, camera, centre, radius, transparent):
+def avogadro_light_travel(camera):
+    """World-space direction the Avogadro-like light travels (unit vector).
+
+    The light sits at AVOGADRO_LIGHT_EYE in GL eye space, which turns with the
+    camera. Mitsuba camera space is GL eye space rotated half a turn about Y,
+    so the eye-space direction maps to (-x, y, -z) before `to_world`.
+    """
+    rotation = np.array(camera.to_world[:3, :3], dtype=float)
+    rotation /= np.linalg.norm(rotation, axis=0)  # drop the ortho scale
+    x, y, z = AVOGADRO_LIGHT_EYE
+    toward_light = rotation @ np.array([-x, y, -z])
+    toward_light /= np.linalg.norm(toward_light)
+    return -toward_light
+
+
+def _avogadro_lighting(scene_dict, camera):
+    scene_dict["fill"] = {
+        "type": "constant",
+        "radiance": {"type": "rgb", "value": [AVOGADRO_FILL_RADIANCE] * 3}}
+    scene_dict["key"] = {
+        "type": "directional",
+        "direction": avogadro_light_travel(camera).tolist(),
+        "irradiance": {"type": "rgb", "value": [AVOGADRO_KEY_IRRADIANCE] * 3}}
+
+
+def _lighting(scene_dict, camera, centre, radius, transparent, preset="Studio"):
+    """Add the lights of the chosen preset."""
+    if preset == "Avogadro-like":
+        _avogadro_lighting(scene_dict, camera)
+        return
+    _studio_lighting(scene_dict, camera, centre, radius)
+
+
+def _studio_lighting(scene_dict, camera, centre, radius):
     """Add the studio environment fill and the soft key light."""
     scene_dict["fill"] = {"type": "constant",
                           "radiance": {"type": "rgb", "value": [FILL_RADIANCE] * 3}}
@@ -118,7 +161,8 @@ def build_mitsuba_scene(mi, scene, camera, width, height, options):
                              scene.cylinder_ends])
     centre = 0.5 * (points.min(axis=0) + points.max(axis=0))
     radius = np.linalg.norm(points - centre, axis=1).max() + 1.0
-    _lighting(scene_dict, camera, centre, radius, transparent)
+    _lighting(scene_dict, camera, centre, radius, transparent,
+              options.get("lighting", "Studio"))
 
     for i, (key, data) in enumerate(meshes.items()):
         linear = srgb_to_linear(np.array(key[:3]) / 255.0).tolist()

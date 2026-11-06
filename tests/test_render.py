@@ -8,10 +8,10 @@ import pytest
 mi = pytest.importorskip("mitsuba")
 
 from avogadro_mitsuba.backend import select_variant
-from avogadro_mitsuba.render import run_render, srgb_to_linear, unique_path
-
-from avogadro_mitsuba.render import build_mitsuba_scene
-from avogadro_mitsuba.camera import fallback_view
+from avogadro_mitsuba.camera import fallback_view, from_view
+from avogadro_mitsuba.render import (avogadro_light_travel,
+                                     build_mitsuba_scene, run_render,
+                                     srgb_to_linear, unique_path)
 from avogadro_mitsuba.scene import build_scene
 
 from conftest import molecule
@@ -106,3 +106,38 @@ def test_translucent_scene_wraps_material_in_mask():
     opaque = build_scene(molecule([6], [(0, 0, 0)]))
     mscene = build_mitsuba_scene(mi, opaque, camera, 32, 24, {})
     assert not str(mscene.shapes()[0].bsdf()).startswith("Mask[")
+
+
+def _view(colors, rotation=np.eye(3)):
+    props = colors["properties"]
+    mv = np.array(props["modelView"], dtype=float)
+    mv[:3, :3] = rotation @ mv[:3, :3]
+    return from_view(mv, props["projection"]), mv
+
+
+def test_avogadro_light_travels_down_and_away_from_viewer(colors):
+    camera, _ = _view(colors)
+    travel = avogadro_light_travel(camera)
+    assert travel == pytest.approx([0, -1, -1] / np.sqrt(2), abs=1e-6)
+
+
+def test_avogadro_light_follows_the_camera(colors):
+    angle = np.radians(70)
+    c, s = np.cos(angle), np.sin(angle)
+    rotation = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    camera, mv = _view(colors, rotation)
+    travel = avogadro_light_travel(camera)
+    # fixed in eye space: modelView maps the world direction back to -L
+    eye = mv[:3, :3] @ travel
+    assert eye == pytest.approx([0, -1, -1] / np.sqrt(2), abs=1e-6)
+    # ... and so it differs from the unrotated world direction
+    assert not np.allclose(travel, avogadro_light_travel(_view(colors)[0]))
+
+
+def test_avogadro_lighting_preset_builds_a_directional_light():
+    scene = build_scene(molecule([6], [(0, 0, 0)]))
+    camera = fallback_view(scene.positions)
+    mscene = build_mitsuba_scene(mi, scene, camera, 32, 24,
+                                 {"lighting": "Avogadro-like"})
+    kinds = sorted(str(e).split("[")[0] for e in mscene.emitters())
+    assert kinds == ["ConstantBackgroundEmitter", "DirectionalEmitter"]

@@ -44,8 +44,8 @@
         "type": "stringList",
         "label": "Lighting",
         "default": 0,
-        "values": ["Studio"],
-        "toolTip": "Soft key light with a fill from the environment",
+        "values": ["Studio", "Avogadro-like"],
+        "toolTip": "Studio: soft key light with an environment fill. Avogadro-like: flat light from above and in front, as in the Avogadro window",
         "order": 5
     },
     "transparent": {
