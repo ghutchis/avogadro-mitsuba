@@ -48,12 +48,20 @@
         "toolTip": "Studio: soft key light with an environment fill. Avogadro-like: flat light from above and in front, as in the Avogadro window",
         "order": 5
     },
+    "translucency": {
+        "type": "stringList",
+        "label": "Translucency",
+        "default": 0,
+        "values": ["Match Avogadro", "Physical (stacked)"],
+        "toolTip": "Only matters for layers with opacity below 1. Match Avogadro: one translucent surface over the opaque scene, as in the Avogadro window. Physical: every translucent surface a ray crosses attenuates it (frosted glass)",
+        "order": 6
+    },
     "transparent": {
         "type": "boolean",
         "label": "Transparent Background",
         "default": false,
         "toolTip": "Write an alpha channel with a transparent background",
-        "order": 6
+        "order": 7
     },
     "backend": {
         "type": "stringList",
@@ -61,6 +69,6 @@
         "default": 0,
         "values": ["Auto", "CUDA", "Metal", "LLVM", "CPU (scalar)"],
         "toolTip": "Auto picks the fastest available: CUDA, Metal, LLVM, then scalar CPU",
-        "order": 7
+        "order": 8
     }
 }

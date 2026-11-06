@@ -141,3 +141,82 @@ def test_avogadro_lighting_preset_builds_a_directional_light():
                                  {"lighting": "Avogadro-like"})
     kinds = sorted(str(e).split("[")[0] for e in mscene.emitters())
     assert kinds == ["ConstantBackgroundEmitter", "DirectionalEmitter"]
+
+
+def test_translucency_option_defaults_to_match_avogadro():
+    from importlib import resources
+    text = (resources.files("avogadro_mitsuba") / "render-options.json").read_text()
+    option = json.loads(text)["translucency"]
+    assert option["type"] == "stringList"
+    assert option["values"] == ["Match Avogadro", "Physical (stacked)"]
+    assert option["default"] == 0
+
+
+def test_composite_translucent_maths():
+    from avogadro_mitsuba.render import composite_translucent
+    # opaque scene: one red pixel (alpha 1) and one empty pixel
+    opaque = np.array([[[0.5, 0, 0, 1.0], [0, 0, 0, 0.0]]])
+    # the translucent shell drawn solid (premultiplied) over both, half
+    # covering a third pixel
+    solid = np.array([[[0.2, 0.4, 0.6, 1.0], [0.2, 0.4, 0.6, 1.0]],
+                      [[0.1, 0.2, 0.3, 0.5], [0, 0, 0, 0]]])
+    opaque = np.concatenate([opaque, np.zeros((1, 2, 4))])
+    weight = np.array([[[0.25] * 4, [0.25] * 4], [[0.1] * 4, [0.0] * 4]])
+    out = composite_translucent(opaque, solid, weight)
+    # w * solid + (1 - w) * opaque, alpha included
+    np.testing.assert_allclose(out[0, 0], [0.05 + 0.375, 0.1, 0.15, 1.0])
+    np.testing.assert_allclose(out[0, 1], [0.05, 0.1, 0.15, 0.25])
+    # the edge pixel is un-premultiplied: colour (0.2, 0.4, 0.6), w = 0.1
+    np.testing.assert_allclose(out[1, 0], [0.02, 0.04, 0.06, 0.1], atol=1e-6)
+    np.testing.assert_allclose(out[1, 1], 0.0)
+    # zero weight returns the opaque render, weight is clipped to 1
+    np.testing.assert_allclose(composite_translucent(opaque, solid, 0 * weight),
+                               opaque)
+    np.testing.assert_allclose(composite_translucent(opaque, solid, 5 + weight)[0, 0],
+                               [0.2, 0.4, 0.6, 1.0])
+
+
+def _translucent_over_opaque():
+    """A small opaque oxygen with a large translucent sphere around it."""
+    cjson = molecule([8, 6], [(0, 0, 0), (0, 0, 0)])  # red O inside grey C
+    cjson["atoms"]["layer"] = [0, 1]
+    cjson["layer"] = {
+        "visible": [True, True],
+        "enable": {"Licorice": [True, False], "Van der Waals": [False, True]},
+        "settings": {"Licorice": ["1.0", ""], "Van der Waals": ["", "0.3"]},
+    }
+    return cjson
+
+
+def test_weight_scene_has_emitters_only_on_translucent_groups():
+    select_variant("CPU (scalar)")
+    scene = build_scene(_translucent_over_opaque())
+    camera = fallback_view(scene.positions)
+    mscene = build_mitsuba_scene(mi, scene, camera, 32, 24, {}, "weight")
+    assert len(mscene.shapes()) == 2
+    assert len(mscene.emitters()) == 1  # no lights, one translucent group
+    emitting = [s for s in mscene.shapes() if s.is_emitter()]
+    assert len(emitting) == 1
+    assert "0.298" in str(mscene.emitters()[0])  # 0.3 in 8 bits
+    # opaque / solid scenes: no translucent bsdf, and "opaque" drops the shell
+    solid = build_mitsuba_scene(mi, scene, camera, 32, 24, {}, "solid")
+    assert not any(str(s.bsdf()).startswith("Mask[") for s in solid.shapes())
+    opaque = build_mitsuba_scene(mi, scene, camera, 32, 24, {}, "opaque")
+    assert len([x for x in opaque.shapes() if not x.is_emitter()]) == 1
+
+
+def test_match_avogadro_shows_the_opaque_object_more(tmp_path):
+    centre = {}
+    for mode in ("Match Avogadro", "Physical (stacked)"):
+        out = tmp_path / mode[:5]
+        result = run_render({"cjson": _translucent_over_opaque(), "options": options(
+            tmp_path, output_dir=str(out), translucency=mode, samples=16,
+            width=96)})
+        assert "error" not in result, result
+        bitmap = np.array(mi.Bitmap(str(next(out.glob("*.png")))))
+        h, w = bitmap.shape[:2]
+        rgb = bitmap[h // 2 - 2:h // 2 + 2, w // 2 - 2:w // 2 + 2, :3].astype(float)
+        centre[mode] = (rgb[..., 0] - rgb[..., 2]).mean()  # redness
+    # the red oxygen inside the grey shell: the one-layer blend lets it show
+    # through more than the physical (front and back surface) shell does
+    assert centre["Match Avogadro"] > centre["Physical (stacked)"] + 5

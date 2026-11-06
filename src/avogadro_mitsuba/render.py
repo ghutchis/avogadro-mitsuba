@@ -21,6 +21,13 @@ MAX_PASSES = 8
 MAX_DEPTH = 8
 # a mask surface that lets the ray through still consumes one bounce
 MAX_DEPTH_TRANSLUCENT = 32
+# the blend-weight render only needs direct visibility, so few samples do
+WEIGHT_SAMPLES = 16
+
+# "Translucency" option values
+MATCH_AVOGADRO = "Match Avogadro"
+PHYSICAL = "Physical (stacked)"
+TRANSLUCENCIES = (MATCH_AVOGADRO, PHYSICAL)
 
 # "Material" option -> BSDF description (the base_color is added per mesh)
 MATERIALS = {
@@ -64,11 +71,14 @@ def srgb_to_linear(rgb):
     return np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
 
 
-def _make_mesh(mi, name, data, bsdf):
+def _make_mesh(mi, name, data, bsdf, emitter=None):
     """Create an mi.Mesh from numpy arrays using the variant's array types."""
+    props = mi.Properties()
+    if emitter is not None:
+        props["emitter"] = emitter
     mesh = mi.Mesh(name, vertex_count=len(data.vertices),
                    face_count=len(data.faces), has_vertex_normals=True,
-                   props=mi.Properties())
+                   props=props)
     params = mi.traverse(mesh)
     # the parameter types differ by variant (scalar vs JIT), so reuse them
     for key, array in (("vertex_positions", data.vertices),
@@ -139,21 +149,33 @@ def _studio_lighting(scene_dict, camera, centre, radius):
     }
 
 
-def build_mitsuba_scene(mi, scene, camera, width, height, options):
-    """Assemble the Mitsuba scene dictionary and load it."""
+def build_mitsuba_scene(mi, scene, camera, width, height, options,
+                        mode="physical"):
+    """Assemble the Mitsuba scene dictionary and load it.
+
+    `mode` selects what is built from the translucent (opacity < 1) groups:
+    "physical" wraps their material in a mask BSDF (stacked transparency);
+    "opaque" leaves them out; "solid" draws them fully opaque; "weight"
+    draws them as unlit emitters of radiance = opacity in front of black
+    geometry, with no lights, so the image is the blend weight.
+    """
     meshes = tessellate(scene, options.get("detail", "Medium"))
     material = MATERIALS.get(options.get("material"), MATERIALS["Glossy plastic"])
     transparent = bool(options.get("transparent", False))
+    weight = mode == "weight"
 
     sensor = camera.sensor_dict(width, height)
     sensor["to_world"] = mi.ScalarTransform4f(sensor["to_world"].tolist())
     sensor["sampler"] = {"type": "independent", "sample_count": 1}
+    if weight:
+        depth = 1
+    else:
+        depth = (MAX_DEPTH_TRANSLUCENT if mode == "physical" and scene.translucent
+                 else MAX_DEPTH)
     scene_dict = {
         "type": "scene",
-        "integrator": {"type": "path",
-                       "max_depth": (MAX_DEPTH_TRANSLUCENT if scene.translucent
-                                     else MAX_DEPTH),
-                       "hide_emitters": True},
+        "integrator": {"type": "path", "max_depth": depth,
+                       "hide_emitters": not weight},
         "sensor": sensor,
     }
 
@@ -161,36 +183,114 @@ def build_mitsuba_scene(mi, scene, camera, width, height, options):
                              scene.cylinder_ends])
     centre = 0.5 * (points.min(axis=0) + points.max(axis=0))
     radius = np.linalg.norm(points - centre, axis=1).max() + 1.0
-    _lighting(scene_dict, camera, centre, radius, transparent,
-              options.get("lighting", "Studio"))
+    if not weight:
+        _lighting(scene_dict, camera, centre, radius, transparent,
+                  options.get("lighting", "Studio"))
 
     for i, (key, data) in enumerate(meshes.items()):
-        linear = srgb_to_linear(np.array(key[:3]) / 255.0).tolist()
-        bsdf_dict = dict(material)
-        bsdf_dict["base_color" if material["type"] == "principled"
-                  else "reflectance"] = {"type": "rgb", "value": linear}
         opacity = key[3] / 255.0
-        if opacity < 1.0:  # alpha blending, as in Avogadro's translucent layers
-            bsdf_dict = {"type": "mask",
-                         "opacity": {"type": "rgb", "value": [opacity] * 3},
-                         "bsdf": bsdf_dict}
+        translucent = opacity < 1.0
+        if mode == "opaque" and translucent:
+            continue
+        emitter = None
+        if weight:
+            bsdf_dict = {"type": "diffuse",
+                         "reflectance": {"type": "rgb", "value": [0.0] * 3}}
+            if translucent:
+                emitter = mi.load_dict({
+                    "type": "area",
+                    "radiance": {"type": "rgb", "value": [opacity] * 3}})
+        else:
+            linear = srgb_to_linear(np.array(key[:3]) / 255.0).tolist()
+            bsdf_dict = dict(material)
+            bsdf_dict["base_color" if material["type"] == "principled"
+                      else "reflectance"] = {"type": "rgb", "value": linear}
+            if translucent and mode == "physical":  # stacked alpha blending
+                bsdf_dict = {"type": "mask",
+                             "opacity": {"type": "rgb", "value": [opacity] * 3},
+                             "bsdf": bsdf_dict}
         bsdf = mi.load_dict(bsdf_dict)
-        scene_dict[f"mesh{i}"] = _make_mesh(mi, f"mesh{i}", data, bsdf)
+        scene_dict[f"mesh{i}"] = _make_mesh(mi, f"mesh{i}", data, bsdf, emitter)
     return mi.load_dict(scene_dict)
 
 
-def render_image(mi, mscene, samples, progress=True):
-    """Render in several passes, averaging; returns a (h, w, 4) float array."""
+def pass_counts(samples):
+    """Samples per pass: `samples` split over up to MAX_PASSES passes."""
     passes = max(1, min(MAX_PASSES, samples))
-    counts = [samples // passes + (1 if i < samples % passes else 0)
-              for i in range(passes)]
-    total = np.zeros(0)
+    return [samples // passes + (1 if i < samples % passes else 0)
+            for i in range(passes)]
+
+
+def render_image(mi, mscene, samples, progress=True, done=0, total=None):
+    """Render in several passes, averaging; returns a (h, w, 4) float array.
+
+    Progress is reported as pass `done + i + 1` of `total` (default: this
+    render's own passes), so several renders can share one progress bar.
+    """
+    counts = pass_counts(samples)
+    if total is None:
+        total = len(counts)
+    accum = np.zeros(0)
     for i, spp in enumerate(counts):
         image = np.array(mi.render(mscene, spp=spp, seed=i), dtype=np.float64)
-        total = image * spp if i == 0 else total + image * spp
+        accum = image * spp if i == 0 else accum + image * spp
         if progress:
-            report_progress(f"Rendering pass {i + 1} of {passes}", i + 1, passes)
-    return (total / samples).astype(np.float32)
+            report_progress(f"Rendering pass {done + i + 1} of {total}",
+                            done + i + 1, total)
+    return (accum / samples).astype(np.float32)
+
+
+def composite_translucent(opaque, solid, weight):
+    """Blend the translucent layers over the opaque scene, 2D.
+
+    All three are linear, alpha-premultiplied (h, w, 4) images: `opaque` has
+    only the opaque groups, `solid` every group drawn opaque, and `weight`
+    (first channel) the opacity of the frontmost translucent surface times
+    its pixel coverage. Returns weight * solid + (1 - weight) * opaque, with
+    `solid` un-premultiplied first because the weight already carries the
+    coverage (otherwise edge pixels would be weighted by it twice).
+    """
+    opaque = np.asarray(opaque, dtype=np.float64)
+    solid = np.asarray(solid, dtype=np.float64)
+    w = np.clip(np.asarray(weight, dtype=np.float64)[..., :1], 0.0, 1.0)
+    alpha = solid[..., 3:4]
+    covered = alpha > 1e-6
+    straight = np.where(covered, solid[..., :3] / np.where(covered, alpha, 1.0),
+                        0.0)
+    top = np.concatenate([np.clip(straight, 0.0, None),
+                          covered.astype(np.float64)], axis=-1)
+    return (w * top + (1.0 - w) * opaque).astype(np.float32)
+
+
+def render_translucent(mi, scene, camera, width, height, options, samples):
+    """Render a scene with translucent groups so that it matches Avogadro.
+
+    Avogadro's GL blends about one translucent surface over the opaque
+    scene, so this renders the opaque groups (A), all groups opaque (B)
+    and the blend weight (W), then composites them (see
+    composite_translucent). A and B share the sampler seeds.
+    """
+    counts = len(pass_counts(samples))
+    total = 2 * counts + 1
+    # same 8-bit rounding as the mesh grouping in tessellate()
+    has_opaque = any((np.round(o * 255) >= 255).any()
+                     for o in (scene.sphere_opacity, scene.cylinder_opacity))
+    if has_opaque:
+        mscene = build_mitsuba_scene(mi, scene, camera, width, height, options,
+                                     "opaque")
+        opaque = render_image(mi, mscene, samples, done=0, total=total)
+    else:  # everything is translucent: nothing behind it
+        opaque = np.zeros((height, width, 4), dtype=np.float32)
+        report_progress(f"Rendering pass {counts} of {total}", counts, total)
+    mscene = build_mitsuba_scene(mi, scene, camera, width, height, options,
+                                 "solid")
+    solid = render_image(mi, mscene, samples, done=counts, total=total)
+    mscene = build_mitsuba_scene(mi, scene, camera, width, height, options,
+                                 "weight")
+    weight = render_image(mi, mscene, min(samples, WEIGHT_SAMPLES),
+                          progress=False)
+    report_progress("Compositing translucent layers", total, total)
+    return composite_translucent(opaque, solid, weight)
 
 
 def write_png(mi, path, image, transparent, background=(1.0, 1.0, 1.0)):
@@ -262,8 +362,13 @@ def render_scene(scene, cjson, options, output_dir, name):
     height = camera.image_height(width)
     transparent = bool(options.get("transparent", False))
 
-    mscene = build_mitsuba_scene(mi, scene, camera, width, height, options)
-    image = render_image(mi, mscene, int(options.get("samples", 128)))
+    samples = int(options.get("samples", 128))
+    if scene.translucent and options.get("translucency", MATCH_AVOGADRO) != PHYSICAL:
+        image = render_translucent(mi, scene, camera, width, height, options,
+                                   samples)
+    else:
+        mscene = build_mitsuba_scene(mi, scene, camera, width, height, options)
+        image = render_image(mi, mscene, samples)
 
     path = unique_path(output_dir, name, ".png")
     write_png(mi, path, image, transparent)

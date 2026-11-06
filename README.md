@@ -9,9 +9,15 @@ visibility / Ball and Stick, Licorice and Van der Waals settings (including
 layer opacity) carry over.
 
 Options: output directory, image width, samples per pixel, geometry detail,
-material (glossy, matte, metallic), lighting (Studio, or Avogadro-like for a
+material (glossy, matte, metallic), translucency, lighting (Studio, or Avogadro-like for a
 flat light from above and in front as in the Avogadro window), transparent
 background, backend.
+
+Translucency applies to layers with opacity below 1. *Match Avogadro* (the
+default) blends the frontmost translucent surface over the opaque scene, as
+the Avogadro window does, by compositing three renders (about twice the cost
+of an opaque scene). *Physical (stacked)* lets every translucent surface a ray
+crosses attenuate it, which looks like frosted glass when spheres overlap.
 
 ## Requirements
 
@@ -32,6 +38,8 @@ background, backend.
 
 - Only Ball and Stick, Licorice and Van der Waals layers are drawn; Wireframe
   is skipped, and there are no cartoons, surfaces, orbitals or labels.
+- Match Avogadro translucency blends only the frontmost translucent surface,
+  and there is no refraction or shadow from translucent layers.
 - Avogadro-like lighting is an approximation: the light is fixed to the view,
   but the path tracer still adds soft shadows and reflections.
 
