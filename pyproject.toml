@@ -1,0 +1,64 @@
+[project]
+name = "avogadro-mitsuba"
+version = "0.1.0"
+description = "Physically based molecular renderings from Avogadro using Mitsuba 3"
+authors = [{name = "Geoff Hutchison", email = "geoff.hutchison@gmail.com"}]
+license = "BSD-3-Clause"
+dependencies = [
+    "numpy",
+    # Mitsuba is only on PyPI (no conda-forge package, no macOS x86_64 wheel).
+    "mitsuba>=3.6",
+    # progress reporting (avogadro.command)
+    "avogadro>=2.1",
+]
+requires-python = ">= 3.12"
+
+[project.scripts]
+avogadro-mitsuba = "avogadro_mitsuba:main"
+
+[build-system]
+build-backend = "uv_build"
+requires = ["uv_build>=0.10.2,<0.11.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# --- Pixi ------------------------------------------------------------------
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+# no osx-64: Mitsuba has no macOS x86_64 wheel
+platforms = ["win-64", "linux-64", "linux-aarch64", "osx-arm64"]
+
+[tool.pixi.pypi-dependencies]
+avogadro-mitsuba = { path = ".", editable = true }
+
+# TODO: the llvm_ad_rgb variant needs libLLVM. Add conda-forge `libllvm` and set
+# DRJIT_LIBLLVM_PATH per platform via [tool.pixi.target.<plat>.activation.env]
+# (and check that Avogadro's `pixi run` applies activation env).
+
+[tool.pixi.tasks]
+
+# pytest lives in its own environment so it is not installed for users.
+[tool.pixi.feature.test.dependencies]
+pytest = "*"
+
+[tool.pixi.feature.test.tasks]
+test = "pytest"
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+test = { features = ["test"], solve-group = "default" }
+
+# --- Avogadro --------------------------------------------------------------
+
+[tool.avogadro]
+minimum-avogadro-version = "1.103"
+
+[[tool.avogadro.menu-commands]]
+identifier = "render"
+menu = "File"
+submenu = "Export"
+item = "Path-Traced Image (Mitsuba)..."
+input-format = "cjson"
+user-options = "src/avogadro_mitsuba/render-options.json"

@@ -1,0 +1,66 @@
+{
+    "output_dir": {
+        "type": "string",
+        "label": "Output Directory",
+        "default": "~/mitsuba-output",
+        "toolTip": "Directory where rendered images will be saved",
+        "order": 0
+    },
+    "width": {
+        "type": "integer",
+        "label": "Image Width (px)",
+        "default": 1200,
+        "minimum": 100,
+        "maximum": 8000,
+        "toolTip": "Image width in pixels; the height follows the aspect ratio of the Avogadro view",
+        "order": 1
+    },
+    "samples": {
+        "type": "integer",
+        "label": "Samples per Pixel",
+        "default": 128,
+        "minimum": 1,
+        "maximum": 16384,
+        "toolTip": "More samples reduce noise but take longer",
+        "order": 2
+    },
+    "detail": {
+        "type": "stringList",
+        "label": "Geometry Detail",
+        "default": 1,
+        "values": ["Low", "Medium", "High"],
+        "toolTip": "Tessellation of spheres and bonds; use High for large close-up atoms",
+        "order": 3
+    },
+    "material": {
+        "type": "stringList",
+        "label": "Material",
+        "default": 0,
+        "values": ["Glossy plastic", "Matte (clay)", "Metallic"],
+        "toolTip": "Surface appearance of atoms and bonds",
+        "order": 4
+    },
+    "lighting": {
+        "type": "stringList",
+        "label": "Lighting",
+        "default": 0,
+        "values": ["Studio"],
+        "toolTip": "Soft key light with a fill from the environment",
+        "order": 5
+    },
+    "transparent": {
+        "type": "boolean",
+        "label": "Transparent Background",
+        "default": false,
+        "toolTip": "Write an alpha channel with a transparent background",
+        "order": 6
+    },
+    "backend": {
+        "type": "stringList",
+        "label": "Backend",
+        "default": 0,
+        "values": ["Auto", "CUDA", "Metal", "LLVM", "CPU (scalar)"],
+        "toolTip": "Auto picks the fastest available: CUDA, Metal, LLVM, then scalar CPU",
+        "order": 7
+    }
+}
